@@ -15,6 +15,8 @@ jobs:
         include:
           - platform: windows-latest
             args: '--bundles msi,nsis'
+          - platform: ubuntu-latest
+            args: '--bundles deb,rpm'
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -42,39 +44,39 @@ jobs:
           Write-Host "Resolved version: $version"
           "version=$version" >> $env:GITHUB_OUTPUT
 
-      - name: Force Sync Version in Configs (Windows)
-        shell: pwsh
-        env:
-          RESOLVED_VERSION: ${{ steps.get_version.outputs.version }}
+      - name: Install jq (cross-platform)
         run: |
-          $version = $env:RESOLVED_VERSION
-          Write-Host "Forcing version to $version in all config files..."
-          
-          # 安全更新 package.json
-          $pkgPath = "package.json"
-          if (Test-Path $pkgPath) {
-            $pkg = Get-Content $pkgPath -Raw | ConvertFrom-Json
-            $pkg.version = $version
-            $pkg | ConvertTo-Json -Depth 10 | Set-Content $pkgPath -Encoding UTF8
-          }
-          
-          # 安全更新 tauri.conf.json
-          $tauriPath = "src-tauri/tauri.conf.json"
-          if (Test-Path $tauriPath) {
-            $tauri = Get-Content $tauriPath -Raw | ConvertFrom-Json
-            $tauri.version = $version
-            $tauri | ConvertTo-Json -Depth 10 | Set-Content $tauriPath -Encoding UTF8
-          }
-          
-          # 安全更新 Cargo.toml
-          $cargoPath = "src-tauri/Cargo.toml"
-          if (Test-Path $cargoPath) {
-            $content = Get-Content $cargoPath -Raw
-            $content = $content -replace '(?m)^version\s*=\s*".*"', "version = `"$version`""
-            Set-Content $cargoPath $content -Encoding UTF8
-          }
-          
-          Write-Host "Version sync completed!"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            choco install jq --yes
+          elif [[ "$RUNNER_OS" == "Linux" ]]; then
+            sudo apt-get update && sudo apt-get install -y jq
+          elif [[ "$RUNNER_OS" == "macOS" ]]; then
+            brew install jq
+          fi
+        shell: bash
+
+      - name: Force Sync Version in Configs (using jq - SAFE)
+        run: |
+          VERSION="${{ steps.get_version.outputs.version }}"
+          echo "Syncing version to: $VERSION"
+
+          # Update package.json
+          jq --arg v "$VERSION" '.version = $v' package.json > package.json.tmp && mv package.json.tmp package.json
+
+          # Update tauri.conf.json
+          jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json > src-tauri/tauri.conf.json.tmp && mv src-tauri/tauri.conf.json.tmp src-tauri/tauri.conf.json
+
+          # Update Cargo.toml (safe sed)
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
+
+          # Verify
+          echo "package.json version:"
+          jq -r '.version' package.json
+          echo "tauri.conf.json version:"
+          jq -r '.version' src-tauri/tauri.conf.json
+          echo "Cargo.toml version:"
+          grep '^version =' src-tauri/Cargo.toml
+        shell: bash
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
