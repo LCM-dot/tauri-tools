@@ -13,25 +13,68 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: 'windows-latest'
-            args: ''
+          - platform: windows-latest
+            args: '--bundles msi,nsis'
 
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'pnpm'
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 8
+        run: npm install -g pnpm
 
       - name: Install frontend dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
+
+      - name: Get version from tag
+        id: get_version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag.TrimStart('v')
+          Write-Host "Resolved version: $version"
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Force Sync Version in Configs (Windows)
+        shell: pwsh
+        env:
+          RESOLVED_VERSION: ${{ steps.get_version.outputs.version }}
+        run: |
+          $version = $env:RESOLVED_VERSION
+          Write-Host "Forcing version to $version in all config files..."
+          
+          # 安全更新 package.json
+          $pkgPath = "package.json"
+          if (Test-Path $pkgPath) {
+            $pkg = Get-Content $pkgPath -Raw | ConvertFrom-Json
+            $pkg.version = $version
+            $pkg | ConvertTo-Json -Depth 10 | Set-Content $pkgPath -Encoding UTF8
+          }
+          
+          # 安全更新 tauri.conf.json
+          $tauriPath = "src-tauri/tauri.conf.json"
+          if (Test-Path $tauriPath) {
+            $tauri = Get-Content $tauriPath -Raw | ConvertFrom-Json
+            $tauri.version = $version
+            $tauri | ConvertTo-Json -Depth 10 | Set-Content $tauriPath -Encoding UTF8
+          }
+          
+          # 安全更新 Cargo.toml
+          $cargoPath = "src-tauri/Cargo.toml"
+          if (Test-Path $cargoPath) {
+            $content = Get-Content $cargoPath -Raw
+            $content = $content -replace '(?m)^version\s*=\s*".*"', "version = `"$version`""
+            Set-Content $cargoPath $content -Encoding UTF8
+          }
+          
+          Write-Host "Version sync completed!"
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -41,9 +84,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: v__VERSION__
-          releaseName: 'Tauri Tools v__VERSION__'
-          releaseBody: 'See the assets to download this version and install.'
-          releaseDraft: true
+          tagName: v${{ steps.get_version.outputs.version }}
+          releaseName: 'Tauri Tools v${{ steps.get_version.outputs.version }}'
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
